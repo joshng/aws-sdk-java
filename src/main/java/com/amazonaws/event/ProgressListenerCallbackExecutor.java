@@ -14,9 +14,7 @@
  */
 package com.amazonaws.event;
 
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.*;
 
 /**
  * This class wraps a ProgressListener object, and manages all its callback
@@ -28,7 +26,7 @@ public class ProgressListenerCallbackExecutor {
     private final ProgressListener listener;
     
     /** A single thread pool for executing all ProgressListener callbacks. **/
-    private static ExecutorService executor;
+    private static volatile ExecutorService globalSharedExecutor;
     
     public ProgressListenerCallbackExecutor(ProgressListener listener) {
         this.listener = listener;
@@ -36,27 +34,34 @@ public class ProgressListenerCallbackExecutor {
     
     public void progressChanged(final ProgressEvent progressEvent) {
         if (listener == null) return;
-        
-        synchronized (ProgressListenerCallbackExecutor.class) {
-            if (executor == null) {
-                executor = Executors.newSingleThreadExecutor(new ThreadFactory() {
-                    public Thread newThread(Runnable r) {
-                        Thread t = new Thread(r);
-                        t.setName("java-sdk-progress-listener-callback-thread");
-                        t.setDaemon(true);
-                        return t;
+
+        Executor selectedExecutor;
+        if (listener instanceof ProgressListenerWithExecutor) {
+            selectedExecutor = ((ProgressListenerWithExecutor)listener).getExecutor();
+        } else {
+            if (globalSharedExecutor == null) {
+                synchronized (ProgressListenerCallbackExecutor.class) {
+                    if (globalSharedExecutor == null) {
+                        globalSharedExecutor = Executors.newSingleThreadExecutor(new ThreadFactory() {
+                            public Thread newThread(Runnable r) {
+                                Thread t = new Thread(r);
+                                t.setName("java-sdk-progress-listener-callback-thread");
+                                t.setDaemon(true);
+                                return t;
+                            }
+                        });
                     }
-                });
-            }
-            executor.submit(new Runnable() {
-                
-                @Override
-                public void run() {
-                    listener.progressChanged(progressEvent);
                 }
-            });
+            }
+            selectedExecutor = globalSharedExecutor;
         }
-        
+
+        selectedExecutor.execute(new Runnable() {
+            @Override
+            public void run() {
+                listener.progressChanged(progressEvent);
+            }
+        });
     }
 
     /**
